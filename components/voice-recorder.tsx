@@ -4,18 +4,21 @@ import { useState, useRef, useCallback, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Mic, Square, Play } from "lucide-react"
+import { Mic, Square, Play, Activity, Wifi, WifiOff } from "lucide-react"
+import { advancedAudioAnalyzer } from "@/lib/audio/advanced-audio-analyzer"
 
 interface VoiceRecorderProps {
   onRecordingComplete: (audioBlob: Blob) => void
   targetSentence: string
   isAnalyzing?: boolean
+  enableRealTime?: boolean
 }
 
 export default function VoiceRecorder({
   onRecordingComplete,
   targetSentence,
   isAnalyzing = false,
+  enableRealTime = false,
 }: VoiceRecorderProps) {
   const [isRecording, setIsRecording] = useState(false)
   const [audioLevel, setAudioLevel] = useState(0)
@@ -24,77 +27,34 @@ export default function VoiceRecorder({
   const [recordingTime, setRecordingTime] = useState(0)
   const [hasRecorded, setHasRecorded] = useState(false)
   const [lastRecordingBlob, setLastRecordingBlob] = useState<Blob | null>(null)
+  const [realTimeConnected, setRealTimeConnected] = useState(false)
+  const [audioQuality, setAudioQuality] = useState({ snr: 0, clarity: 0, stability: 0 })
+  const [realTimeResults, setRealTimeResults] = useState<any[]>([])
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
-  const audioContextRef = useRef<AudioContext | null>(null)
-  const analyserRef = useRef<AnalyserNode | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
-  const animationFrameRef = useRef<number | null>(null)
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const realTimeAnalyzerRef = useRef<any>(null)
 
   // Audio analysis constants
   const SILENCE_THRESHOLD = 0.01 // 1%
   const SPEECH_THRESHOLD = 0.05 // 5%
   const STRONG_SPEECH_THRESHOLD = 0.15 // 15%
 
-  const analyzeAudio = useCallback(() => {
-    if (!analyserRef.current) return
-
-    const analyser = analyserRef.current
-    const bufferLength = analyser.frequencyBinCount
-    const dataArray = new Uint8Array(bufferLength)
-    const floatArray = new Float32Array(bufferLength)
-
-    analyser.getByteFrequencyData(dataArray)
-    analyser.getFloatFrequencyData(floatArray)
-
-    // Calculate RMS (Root Mean Square) for accurate audio level
-    let rms = 0
-    let sum = 0
-    let peak = 0
-
-    for (let i = 0; i < bufferLength; i++) {
-      const value = dataArray[i] / 255.0 // Normalize to 0-1
-      sum += value * value
-      peak = Math.max(peak, value)
+  // Initialize advanced audio analyzer
+  useEffect(() => {
+    const initializeAnalyzer = async () => {
+      try {
+        await advancedAudioAnalyzer.initialize()
+        setRealTimeConnected(true)
+      } catch (error) {
+        console.error('Failed to initialize advanced analyzer:', error)
+        setRealTimeConnected(false)
+      }
     }
 
-    rms = Math.sqrt(sum / bufferLength)
-
-    // Calculate average level
-    const average = dataArray.reduce((acc, val) => acc + val, 0) / bufferLength / 255.0
-
-    // Use the maximum of RMS and average for better sensitivity
-    const currentLevel = Math.max(rms, average, peak * 0.5)
-
-    // Apply smoothing to prevent jittery updates
-    const smoothedLevel = audioLevel * 0.7 + currentLevel * 0.3
-
-    setAudioLevel(smoothedLevel)
-    setMaxAudioLevel((prev) => Math.max(prev, smoothedLevel))
-
-    // Speech detection with multiple criteria
-    const isSpeechDetected =
-      smoothedLevel > SPEECH_THRESHOLD ||
-      (smoothedLevel > SILENCE_THRESHOLD && peak > 0.1) ||
-      (average > SILENCE_THRESHOLD && rms > SILENCE_THRESHOLD)
-
-    setSpeechDetected(isSpeechDetected)
-
-    // Debug logging
-    console.log({
-      rms: rms.toFixed(4),
-      average: average.toFixed(4),
-      peak: peak.toFixed(4),
-      smoothed: smoothedLevel.toFixed(4),
-      speechDetected: isSpeechDetected,
-      percentage: `${(smoothedLevel * 100).toFixed(1)}%`,
-    })
-
-    if (isRecording) {
-      animationFrameRef.current = requestAnimationFrame(analyzeAudio)
-    }
-  }, [audioLevel, isRecording])
+    initializeAnalyzer()
+  }, [])
 
   const startRecording = async () => {
     try {
@@ -107,37 +67,44 @@ export default function VoiceRecorder({
       setRecordingTime(0)
 
       // Get user media with optimized settings
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const constraints = {
         audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
           sampleRate: 44100,
           channelCount: 1,
+          latency: 0.01
         },
-      })
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints)
 
       streamRef.current = stream
 
-      // Set up audio context and analyser
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
-      audioContextRef.current = audioContext
-
-      if (audioContext.state === "suspended") {
-        await audioContext.resume()
+      // Start real-time analysis if enabled
+      if (enableRealTime && realTimeConnected) {
+        try {
+          await advancedAudioAnalyzer.startRealTimeAnalysis(
+            stream,
+            targetSentence,
+            (result) => {
+              setRealTimeResults(prev => [...prev.slice(-10), result]) // Keep last 10 results
+            },
+            (audioData) => {
+              // Update real-time audio metrics
+              setAudioLevel(audioData.vad.energy)
+              setSpeechDetected(audioData.vad.isActive)
+              
+              // Update audio quality metrics
+              const quality = advancedAudioAnalyzer.getSpeechQualityMetrics()
+              setAudioQuality(quality)
+            }
+          )
+        } catch (error) {
+          console.error('Real-time analysis failed:', error)
+        }
       }
-
-      const source = audioContext.createMediaStreamSource(stream)
-      const analyser = audioContext.createAnalyser()
-
-      // Configure analyser for maximum sensitivity
-      analyser.fftSize = 2048
-      analyser.smoothingTimeConstant = 0.3
-      analyser.minDecibels = -90
-      analyser.maxDecibels = -10
-
-      source.connect(analyser)
-      analyserRef.current = analyser
 
       // Set up media recorder
       const mediaRecorder = new MediaRecorder(stream, {
@@ -165,9 +132,6 @@ export default function VoiceRecorder({
 
       setIsRecording(true)
 
-      // Start audio analysis
-      analyzeAudio()
-
       // Start recording timer
       recordingTimerRef.current = setInterval(() => {
         setRecordingTime((prev) => prev + 0.1)
@@ -183,20 +147,17 @@ export default function VoiceRecorder({
   const stopRecording = () => {
     console.log("Stopping recording...")
 
+    // Stop real-time analysis
+    if (enableRealTime) {
+      advancedAudioAnalyzer.stopRealTimeAnalysis()
+    }
+
     if (mediaRecorderRef.current && isRecording) {
       mediaRecorderRef.current.stop()
     }
 
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop())
-    }
-
-    if (audioContextRef.current) {
-      audioContextRef.current.close()
-    }
-
-    if (animationFrameRef.current) {
-      cancelAnimationFrame(animationFrameRef.current)
     }
 
     if (recordingTimerRef.current) {
@@ -217,17 +178,14 @@ export default function VoiceRecorder({
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current)
-      }
       if (recordingTimerRef.current) {
         clearInterval(recordingTimerRef.current)
       }
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop())
       }
-      if (audioContextRef.current) {
-        audioContextRef.current.close()
+      if (enableRealTime) {
+        advancedAudioAnalyzer.stopRealTimeAnalysis()
       }
     }
   }, [])
@@ -287,7 +245,14 @@ export default function VoiceRecorder({
           {/* Real-time Audio Level Bar */}
           <div className="space-y-2">
             <div className="flex justify-between items-center text-sm">
-              <span>Audio Level:</span>
+              <span className="flex items-center gap-2">
+                Audio Level:
+                {enableRealTime && (
+                  realTimeConnected ? 
+                    <Wifi className="h-4 w-4 text-green-500" /> : 
+                    <WifiOff className="h-4 w-4 text-red-500" />
+                )}
+              </span>
               <span className="font-mono">{(audioLevel * 100).toFixed(1)}%</span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
@@ -307,7 +272,47 @@ export default function VoiceRecorder({
               {speechDetected ? "✅ Speech Detected" : "🎤 Listening..."}
             </Badge>
             {maxAudioLevel > 0 && <Badge variant="outline">Max: {(maxAudioLevel * 100).toFixed(1)}%</Badge>}
+            {enableRealTime && (
+              <Badge variant={realTimeConnected ? "default" : "destructive"}>
+                <Activity className="h-3 w-3 mr-1" />
+                {realTimeConnected ? "Real-time" : "Offline"}
+              </Badge>
+            )}
           </div>
+
+          {/* Audio Quality Metrics */}
+          {enableRealTime && realTimeConnected && (
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="text-center">
+                <div className="font-semibold">SNR</div>
+                <div className={`${audioQuality.snr > 20 ? 'text-green-600' : audioQuality.snr > 10 ? 'text-yellow-600' : 'text-red-600'}`}>
+                  {audioQuality.snr.toFixed(0)}dB
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="font-semibold">Clarity</div>
+                <div className={`${audioQuality.clarity > 0.8 ? 'text-green-600' : audioQuality.clarity > 0.6 ? 'text-yellow-600' : 'text-red-600'}`}>
+                  {(audioQuality.clarity * 100).toFixed(0)}%
+                </div>
+              </div>
+              <div className="text-center">
+                <div className="font-semibold">Stability</div>
+                <div className={`${audioQuality.stability > 0.8 ? 'text-green-600' : audioQuality.stability > 0.6 ? 'text-yellow-600' : 'text-red-600'}`}>
+                  {(audioQuality.stability * 100).toFixed(0)}%
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Real-time Results */}
+          {enableRealTime && realTimeResults.length > 0 && (
+            <div className="bg-blue-50 rounded-lg p-3">
+              <div className="text-sm font-semibold text-blue-800 mb-2">Real-time Analysis</div>
+              <div className="text-xs text-blue-700">
+                Latest: {realTimeResults[realTimeResults.length - 1]?.transcript || 'Processing...'}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Recording Controls */}
@@ -349,23 +354,32 @@ export default function VoiceRecorder({
           <div className="text-center text-sm text-gray-600 space-y-1">
             <p>
               {isRecording
-                ? "Recording... Speak the sentence clearly"
+                ? enableRealTime 
+                  ? "Recording with real-time analysis... Speak clearly"
+                  : "Recording... Speak the sentence clearly"
                 : hasRecorded
                   ? "Recording complete! You can record again or analyze your pronunciation."
-                  : "Click the microphone to start recording"}
+                  : enableRealTime
+                    ? "Click to start recording with real-time feedback"
+                    : "Click the microphone to start recording"}
             </p>
             {isAnalyzing && <p className="text-blue-600 font-medium">Analyzing your pronunciation...</p>}
+            {enableRealTime && !realTimeConnected && (
+              <p className="text-orange-600 font-medium">Real-time analysis unavailable - using offline mode</p>
+            )}
           </div>
         </div>
 
         {/* Debug Information (Development Only) */}
         {process.env.NODE_ENV === "development" && (
           <div className="text-xs text-gray-500 bg-gray-50 p-2 rounded space-y-1">
-            <div>RMS Level: {(audioLevel * 100).toFixed(2)}%</div>
+            <div>Audio Level: {(audioLevel * 100).toFixed(2)}%</div>
             <div>Max Level: {(maxAudioLevel * 100).toFixed(2)}%</div>
             <div>Speech Detected: {speechDetected ? "Yes" : "No"}</div>
             <div>Recording: {isRecording ? "Active" : "Inactive"}</div>
             <div>Time: {recordingTime.toFixed(1)}s</div>
+            <div>Real-time: {realTimeConnected ? "Connected" : "Disconnected"}</div>
+            <div>Quality: SNR={audioQuality.snr.toFixed(1)}, Clarity={audioQuality.clarity.toFixed(2)}</div>
           </div>
         )}
       </CardContent>

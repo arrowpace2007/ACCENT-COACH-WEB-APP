@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server"
-import { analyzeAudioWithGemini } from "@/lib/gemini"
+import { advancedAudioAnalyzer } from "@/lib/audio/advanced-audio-analyzer"
 
 export async function POST(request: NextRequest) {
   try {
@@ -14,12 +14,36 @@ export async function POST(request: NextRequest) {
     // Convert audio file to buffer
     const audioBuffer = Buffer.from(await audioFile.arrayBuffer())
 
-    // Analyze with Gemini
-    const analysis = await analyzeAudioWithGemini(audioBuffer, targetSentence)
+    // Initialize and analyze with advanced system
+    await advancedAudioAnalyzer.initialize()
+    
+    // Validate audio quality first
+    const audioValidation = await advancedAudioAnalyzer.validateAudioQuality(audioBuffer)
+    
+    if (!audioValidation.isValid) {
+      return NextResponse.json({ 
+        error: "Audio quality issues detected",
+        issues: audioValidation.issues,
+        recommendations: audioValidation.recommendations
+      }, { status: 400 })
+    }
+
+    // Perform advanced analysis
+    const analysis = await advancedAudioAnalyzer.analyzeAudio(audioBuffer, targetSentence, {
+      enableRealTime: false,
+      modelPreference: ['gemini', 'google', 'azure', 'local']
+    })
 
     return NextResponse.json({ analysis })
   } catch (error) {
     console.error("Error analyzing audio:", error)
-    return NextResponse.json({ error: "Failed to analyze audio" }, { status: 500 })
+    
+    // Return more detailed error information
+    const errorMessage = error instanceof Error ? error.message : "Unknown error occurred"
+    return NextResponse.json({ 
+      error: "Failed to analyze audio",
+      details: errorMessage,
+      timestamp: new Date().toISOString()
+    }, { status: 500 })
   }
 }

@@ -390,6 +390,7 @@ export default function PracticePage() {
             onRecordingComplete={handleRecordingComplete}
             targetSentence={currentSentence.sentence}
             isAnalyzing={isAnalyzing}
+            enableRealTime={true}
           />
         )}
 
