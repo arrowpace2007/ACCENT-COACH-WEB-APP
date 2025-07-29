@@ -203,7 +203,23 @@ const nextConfig = {
 
   // CORS Configuration
   async rewrites() {
-    return [
+    const rewrites = [
+      {
+        source: '/health',
+        destination: '/api/health',
+      }
+    ]
+
+    // Only add audio proxy rewrite if AUDIO_SERVICE_URL is defined
+    if (process.env.AUDIO_SERVICE_URL) {
+      rewrites.unshift({
+        source: '/api/audio-proxy/:path*',
+        destination: `${process.env.AUDIO_SERVICE_URL}/api/:path*`,
+      })
+    }
+
+    return rewrites
+  },
       {
         source: '/api/audio-proxy/:path*',
         destination: `${process.env.AUDIO_SERVICE_URL}/api/:path*`,
