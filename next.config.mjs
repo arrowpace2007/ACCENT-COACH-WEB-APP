@@ -12,7 +12,7 @@ const nextConfig = {
       },
     },
     // Enable partial prerendering for better performance
-    ppr: true,
+    ppr: false,
     // Optimize server components
     serverComponentsExternalPackages: [
       '@google-cloud/speech',
